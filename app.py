@@ -277,5 +277,7 @@ def upload():
 @app.route("/download")
 def download():
     return send_file(processed_file, as_attachment=True)
+
+
 if __name__ == "__main__":
     app.run(debug=True)
