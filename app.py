@@ -2,21 +2,25 @@ from flask import Flask, render_template_string, request, send_file
 import pandas as pd
 import os
 import re
-from werkzeug.utils import secure_filename
+from io import BytesIO
 
 app = Flask(__name__)
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 # ===============================
-# LOAD NAME LISTS
+# LOAD NAME LISTS (SAFE PATHS)
 # ===============================
-with open("Male_names.txt", "r", encoding="utf-8") as f:
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+with open(os.path.join(BASE_DIR, "Male_names.txt"), "r", encoding="utf-8") as f:
     MALE_NAMES = {n.strip().lower() for n in f if n.strip()}
-with open("Female_names.txt", "r", encoding="utf-8") as f:
+
+with open(os.path.join(BASE_DIR, "Female_names.txt"), "r", encoding="utf-8") as f:
     FEMALE_NAMES = {n.strip().lower() for n in f if n.strip()}
+
 male_titles = {"mr", "sir", "gentleman", "king", "prince"}
 female_titles = {"mrs", "ms", "miss", "madam", "queen", "princess"}
 ignore_words = {"and","the","a","of","for","with","at","by","in","to","from","user","name"}
+
 # ===============================
 # CLEANING
 # ===============================
@@ -25,9 +29,11 @@ def aggressively_clean_fullname(name):
     name = re.sub(r'\b(mr|mrs|ms|dr|prof|jr|sr|iii?|esq)\b', ' ', name)
     name = re.sub(r'[^a-z ]+', ' ', name)
     return re.sub(r'\s+', ' ', name).strip()
+
 def clean_name(name):
     parts = [w for w in name.split() if len(w) > 1 and w not in ignore_words]
     return " ".join(parts)
+
 # ===============================
 # ANALYSIS
 # ===============================
@@ -35,24 +41,29 @@ def analyze_name(name):
     clean_n = clean_name(name)
     if not clean_n:
         return "Unknown", 50
+
     words = clean_n.split()
     first = words[0]
+
     if any(w in male_titles for w in words):
         return "Male", 99
     if any(w in female_titles for w in words):
         return "Female", 99
+
     in_male = first in MALE_NAMES
     in_female = first in FEMALE_NAMES
+
     if in_male and not in_female:
         return "Male", 95
     if in_female and not in_male:
         return "Female", 95
+
     return "Unknown", 50
+
 # ===============================
-# WEB ROUTES
+# HTML
 # ===============================
-HTML = """
-<!DOCTYPE html>
+HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -248,36 +259,41 @@ HTML = """
 </body>
 </html>
 """
-processed_file = None
-@app.route("/", methods=["GET","POST"])
+
+# ===============================
+# ROUTE
+# ===============================
+@app.route("/", methods=["GET", "POST"])
 def upload():
-    global processed_file
     if request.method == "POST":
         file = request.files["file"]
-        filename = secure_filename(file.filename)
-        path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(path)
-        if filename.endswith(".csv"):
-            df = pd.read_csv(path)
+
+        if file.filename.endswith(".csv"):
+            df = pd.read_csv(file)
         else:
-            df = pd.read_excel(path)
+            df = pd.read_excel(file)
+
         df.columns = [c.lower() for c in df.columns]
         name_col = "fullname" if "fullname" in df.columns else "full_name"
+
         df["cleaned_fullname"] = df[name_col].apply(aggressively_clean_fullname)
-        df[["Gender","Confidence_Raw"]] = df["cleaned_fullname"].apply(
+        df[["Gender", "Confidence_Raw"]] = df["cleaned_fullname"].apply(
             lambda x: pd.Series(analyze_name(x))
         )
         df["Confidence"] = df["Confidence_Raw"].astype(str) + "%"
-        out = path.replace(".", "_USA_STRICT_NO_OVERLAP.")
-        df.to_excel(out, index=False)
-        processed_file = out
-        return render_template_string(HTML, download=True)
-    return render_template_string(HTML, download=False)
 
-@app.route("/download")
-def download():
-    return send_file(processed_file, as_attachment=True)
+        output = BytesIO()
+        df.to_excel(output, index=False)
+        output.seek(0)
 
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name="gender_analysis.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    return render_template_string(HTML)
 
 if __name__ == "__main__":
     app.run(debug=True)
